@@ -1,11 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { ILeadRepository } from '../../database/interfaces/lead-repository.interface';
+import { LEAD_REPOSITORY } from '../../database/interfaces/lead-repository.interface';
 
 @Injectable()
 export class FacebookGatewayService {
   private readonly logger = new Logger(FacebookGatewayService.name);
 
-  constructor(private configService: ConfigService) {}
+  constructor(
+    private configService: ConfigService,
+    @Inject(LEAD_REPOSITORY) private readonly leadRepository: ILeadRepository,
+  ) {}
 
   verifyWebhook(mode: string, token: string, challenge: string): string | null {
     const verifyToken = this.configService.get<string>('FACEBOOK_VERIFY_TOKEN');
@@ -28,7 +33,7 @@ export class FacebookGatewayService {
 
         // Feeds/Comments
         if (entry.changes) {
-          this.handleChangesEvents(entry.changes);
+          await this.handleChangesEvents(entry.changes);
         }
       }
     }
@@ -54,6 +59,28 @@ export class FacebookGatewayService {
         }
 
         const extracted = this.extractCustomerInfo(textToParse);
+
+        // Lưu vào database
+        try {
+          await this.leadRepository.createLead({
+            source: 'facebook_message',
+            platform_user_id: senderId,
+            sender_name: senderName,
+            raw_message: messageText,
+            phone: extracted.phone,
+            email: extracted.email,
+            address: extracted.address,
+            name: extracted.name,
+          });
+          this.logger.log(
+            `[Facebook Messenger] Lead saved for PSID: ${senderId}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `[Facebook Messenger] Failed to save lead: ${error.message}`,
+          );
+        }
+
         if (
           extracted.phone ||
           extracted.email ||
@@ -68,7 +95,7 @@ export class FacebookGatewayService {
     }
   }
 
-  private handleChangesEvents(changes: any[]): void {
+  private async handleChangesEvents(changes: any[]): Promise<void> {
     for (const change of changes) {
       if (change.field === 'feed') {
         const value = change.value;
@@ -82,6 +109,28 @@ export class FacebookGatewayService {
           );
 
           const extracted = this.extractCustomerInfo(messageText);
+
+          // Lưu vào database
+          try {
+            await this.leadRepository.createLead({
+              source: 'facebook_comment',
+              platform_user_id: senderId,
+              sender_name: senderName,
+              raw_message: messageText,
+              phone: extracted.phone,
+              email: extracted.email,
+              address: extracted.address,
+              name: extracted.name,
+            });
+            this.logger.log(
+              `[Facebook Comment] Lead saved for comment ID: ${commentId}`,
+            );
+          } catch (error) {
+            this.logger.error(
+              `[Facebook Comment] Failed to save lead: ${error.message}`,
+            );
+          }
+
           if (
             extracted.phone ||
             extracted.email ||
